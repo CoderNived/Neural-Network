@@ -43,6 +43,8 @@ def shape(A):
     return (len(A), len(A[0]))
 
 def _check_rect(A, name="Matrix"):
+    if not A or not A[0]:
+        raise ValueError(f"{name} is empty or has empty rows")
     cols = len(A[0])
     for row in A:
         if len(row) != cols:
@@ -238,6 +240,8 @@ def run_tests():
     assert approx_eq(sigmoid(0), 0.5),          f"sigmoid(0) = {sigmoid(0)}"
     assert approx_eq(sigmoid(100), 1.0, 1e-6),  f"sigmoid(100) = {sigmoid(100)}"
     assert approx_eq(sigmoid(-100), 0.0, 1e-6), f"sigmoid(-100) = {sigmoid(-100)}"
+    assert approx_eq(sigmoid(1000), 1.0, 1e-9),  "sigmoid(1000) must equal 1.0 in float"
+    assert approx_eq(sigmoid(-1000), 0.0, 1e-9), "sigmoid(-1000) must equal 0.0 in float"
     # Stability: these must not raise OverflowError
     sigmoid(1000)
     sigmoid(-1000)
