@@ -115,9 +115,16 @@ class Module:
             p.grad = 0.0
 
     @property
+
     def n_params(self) -> int:
         """Total number of trainable scalar parameters."""
         return len(self.parameters())
+
+    def n_parameters(self) -> int:
+        """
+        Backward compatibility for older code.
+        """
+        return self.n_params
 
     # ── state dict ────────────────────────────────────────────────────────────
 
@@ -353,11 +360,17 @@ class Network(Sequential):
                 )
 
     # ── override __init__ to add validation ───────────────────────────────────
+def __new__(cls, *args, **kwargs):
+    # Only validate if raw layers were directly provided
+    layers = kwargs.get("layers")
 
-    def __new__(cls, layers, names=None, *, name='Network'):
-        # Validate before Sequential.__init__ allocates anything
+    if layers is None and len(args) > 0:
+        layers = args[0]
+
+    if layers is not None:
         Network._validate_layers(layers)
-        return super().__new__(cls)
+
+    return super().__new__(cls)
 
     # ── summary ───────────────────────────────────────────────────────────────
 
@@ -553,4 +566,45 @@ class Network(Sequential):
         return (
             f"Network(name={self.name!r}, arch={shapes}, "
             f"params={self.n_params}, mode={'train' if self._training else 'eval'})"
+        )
+# ─────────────────────────────────────────────────────────────────────────────
+# Backward compatibility wrapper
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MLP(Network):
+    """
+    Compatibility wrapper so older code using:
+
+        MLP(
+            layer_sizes=[2,4,1],
+            activations=['tanh','sigmoid']
+        )
+
+    continues working.
+    """
+
+    def __init__(
+        self,
+        layer_sizes,
+        activations,
+        name="MLP"
+    ):
+        if len(layer_sizes) != len(activations) + 1:
+            raise ValueError(
+                "layer_sizes length must equal "
+                "len(activations)+1"
+            )
+
+        layers = [
+            Layer(
+                layer_sizes[i],
+                layer_sizes[i+1],
+                activations[i]
+            )
+            for i in range(len(activations))
+        ]
+
+        super().__init__(
+            layers=layers,
+            name=name
         )
