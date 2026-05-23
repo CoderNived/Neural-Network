@@ -12,13 +12,25 @@ Design:
         _backward  — closure that pushes gradient to parents
         _parents   — set of Values that produced this one
         _op        — string label for debugging / visualisation
+        _topo_cache — cached topological sort (None until first backward())
 
     Calling .backward() on the final output node:
-        1. Topologically sorts the DAG (post-order DFS)
+        1. Topologically sorts the DAG (post-order DFS) on the FIRST call
+           only — result is cached in _topo_cache for subsequent calls.
         2. Sets self.grad = 1.0  (d_loss/d_loss = 1)
         3. Calls _backward() on every node in reverse topological order
            so each node receives its full accumulated gradient before
            it propagates to its parents.
+
+    Cache invalidation:
+        The cache lives on the loss Value node. Because every forward pass
+        produces a NEW loss Value object (via model(x)), _topo_cache starts
+        as None on every new forward pass automatically — no explicit
+        invalidation signal is needed. Object lifecycle IS the invalidation.
+
+        The only case where the cache is reused is calling .backward()
+        more than once on the SAME loss object (e.g. gradient accumulation),
+        which is exactly the correct behaviour.
 
 Why a set for _parents?
     Order doesn't matter (we sort separately).
@@ -47,12 +59,13 @@ import math
 class Value:
 
     def __init__(self, data, _parents=(), _op='', _label=''):
-        self.data      = float(data)
-        self.grad      = 0.0
-        self._backward = lambda: None
-        self._parents  = set(_parents)
-        self._op       = _op        # for debug / graph visualisation
-        self._label    = _label     # optional human-readable name
+        self.data        = float(data)
+        self.grad        = 0.0
+        self._backward   = lambda: None
+        self._parents    = set(_parents)
+        self._op         = _op        # for debug / graph visualisation
+        self._label      = _label     # optional human-readable name
+        self._topo_cache = None       # populated lazily on first backward()
 
     def __repr__(self):
         return (f"Value(data={self.data:.6g}, grad={self.grad:.6g}"
@@ -271,9 +284,19 @@ class Value:
         reverse-mode automatic differentiation.
 
         Algorithm:
-            1. Build topological order with post-order DFS.
-               Post-order guarantees: a node is appended only after
-               ALL of its parents have been appended.
+            1. Build topological order with post-order DFS — but only on
+               the FIRST call.  The result is cached in self._topo_cache.
+               Subsequent calls on the same loss node (e.g. gradient
+               accumulation) reuse the cached order directly.
+
+               Invalidation: the cache lives on the loss Value object.
+               A new forward pass (loss = model(x)) produces a new Value
+               object whose _topo_cache is None, so the sort runs exactly
+               once per forward pass automatically.  No explicit flag or
+               signal is required — object lifecycle IS invalidation.
+
+               Post-order guarantees: a node is appended only after ALL
+               of its parents have been appended.
                → topo[-1] is always self (the output / loss node).
                → topo[0] is always a leaf with no parents.
 
@@ -296,26 +319,50 @@ class Value:
               would rely on default __hash__ (id-based), which works,
               but being explicit avoids confusion if __hash__ is ever
               overridden.
+
+        Cache correctness:
+            - .grad values are NOT cached — they are reset and recomputed
+              fresh on every backward() call.
+            - .data values are NOT cached — they are live scalars set
+              during the forward pass.
+            - Only the traversal ORDER (list of node references) is cached,
+              because graph topology (_parents sets) never changes after
+              the forward pass builds it.
+            - zero_grad() does NOT invalidate the cache — it zeroes .grad
+              fields but leaves _parents untouched, so the sort order
+              remains valid.
         """
-        topo    = []
-        visited = set()
+        # ── Step 1: build topo order (cached) ───────────────────────────
+        if self._topo_cache is None:
+            topo    = []
+            visited = set()
 
-        def _build_topo(v):
-            if id(v) not in visited:
-                visited.add(id(v))
-                for parent in v._parents:
-                    _build_topo(parent)
-                topo.append(v)   # post-order: appended after all parents
+            def _build_topo(v):
+                if id(v) not in visited:
+                    visited.add(id(v))
+                    for parent in v._parents:
+                        _build_topo(parent)
+                    topo.append(v)   # post-order: appended after all parents
 
-        _build_topo(self)
+            _build_topo(self)
+            self._topo_cache = topo  # store for reuse on this loss node
 
+        # ── Step 2: seed gradient ────────────────────────────────────────
         self.grad = 1.0
 
-        for node in reversed(topo):   # output-first, leaves-last
+        # ── Step 3: propagate (output-first, leaves-last) ────────────────
+        for node in reversed(self._topo_cache):
             node._backward()
 
     def zero_grad(self):
-        """Reset gradients for this node and all ancestors."""
+        """
+        Reset gradients for this node and all ancestors.
+
+        Does NOT invalidate _topo_cache — zero_grad() only modifies
+        .grad fields, never _parents, so the cached traversal order
+        remains correct.  The cache is invalidated implicitly when a
+        new forward pass creates a new loss Value object.
+        """
         visited = set()
 
         def _zero(v):

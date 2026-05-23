@@ -91,6 +91,7 @@ def or_task():
 
 def xor_task():
     """
+    
     XOR: output 1 when inputs differ.
     NOT linearly separable. A single neuron will fail — its loss
     will plateau above 0.25 (chance level for this encoding).
