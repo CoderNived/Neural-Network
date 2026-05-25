@@ -1,122 +1,249 @@
-import math
+# engine/activations.py
+
+import numpy as np
 from engine.value import Value
 
-# ── helpers ──────────────────────────────────────────────────────────────────
 
-def _ensure_value(v) -> Value:
-    """Coerce scalars to Value; pass Value instances through unchanged."""
-    return v if isinstance(v, Value) else Value(float(v))
+# ==========================================================
+# Helper
+# ==========================================================
+
+def _ensure_value(v):
+    """Convert scalars/lists to Value."""
+    return v if isinstance(v, Value) else Value(v)
 
 
-# ── activation functions ──────────────────────────────────────────────────────
+# ==========================================================
+# Activation Functions
+# ==========================================================
 
-def relu(v: Value) -> Value:
+def relu(v):
+    """
+    ReLU:
+        f(x)=max(0,x)
+    """
     v = _ensure_value(v)
-    data = max(0.0, v.data)
-    out  = Value(data, _parents=(v,), _op='relu')
+
+    out = Value(
+        np.maximum(0.0, v.data),
+        _parents=(v,),
+        _op='relu'
+    )
 
     def _backward():
-        v.grad += (out.grad if v.data > 0 else 0.0)
+        v.grad += (
+            (v.data > 0).astype(float)
+            * out.grad
+        )
 
     out._backward = _backward
     return out
 
 
-def sigmoid(v: Value) -> Value:
-    """Numerically stable sigmoid via log-sum-exp trick."""
+def sigmoid(v):
+    """
+    Numerically stable sigmoid:
+        σ(x)=1/(1+e^(-x))
+    """
+
     v = _ensure_value(v)
+
     x = v.data
-    # Avoid overflow in exp by choosing the stable branch
-    s = 1.0 / (1.0 + math.exp(-x)) if x >= 0 else math.exp(x) / (1.0 + math.exp(x))
-    out = Value(s, _parents=(v,), _op='sigmoid')
+
+    s = np.where(
+        x >= 0,
+        1.0/(1.0+np.exp(-x)),
+        np.exp(x)/(1.0+np.exp(x))
+    )
+
+    out = Value(
+        s,
+        _parents=(v,),
+        _op='sigmoid'
+    )
 
     def _backward():
-        v.grad += s * (1.0 - s) * out.grad   # σ(1 − σ)
+
+        v.grad += (
+            s*(1.0-s)
+            * out.grad
+        )
 
     out._backward = _backward
     return out
 
 
-def tanh(v: Value) -> Value:
-    """Numerically stable tanh (avoids catastrophic cancellation for large |x|)."""
+def tanh(v):
+    """
+    tanh activation
+    """
+
     v = _ensure_value(v)
-    x = v.data
-    # math.tanh already handles stability internally; use it directly
-    t = math.tanh(x)
-    out = Value(t, _parents=(v,), _op='tanh')
+
+    t = np.tanh(v.data)
+
+    out = Value(
+        t,
+        _parents=(v,),
+        _op='tanh'
+    )
 
     def _backward():
-        v.grad += (1.0 - t * t) * out.grad   # sech²(x)
+
+        v.grad += (
+            (1.0 - t**2)
+            * out.grad
+        )
 
     out._backward = _backward
     return out
 
 
-def leaky_relu(v: Value, negative_slope: float = 0.01) -> Value:
-    """Leaky ReLU — keeps a small gradient for negative inputs."""
+def leaky_relu(v, negative_slope=0.01):
+    """
+    Leaky ReLU:
+        x if x>0
+        αx otherwise
+    """
+
     v = _ensure_value(v)
-    data = v.data if v.data > 0 else negative_slope * v.data
-    out  = Value(data, _parents=(v,), _op='leaky_relu')
+
+    out_data = np.where(
+        v.data > 0,
+        v.data,
+        negative_slope*v.data
+    )
+
+    out = Value(
+        out_data,
+        _parents=(v,),
+        _op='leaky_relu'
+    )
 
     def _backward():
-        v.grad += (out.grad if v.data > 0 else negative_slope * out.grad)
+
+        grad = np.where(
+            v.data > 0,
+            1.0,
+            negative_slope
+        )
+
+        v.grad += (
+            grad
+            * out.grad
+        )
 
     out._backward = _backward
     return out
 
 
-def elu(v: Value, alpha: float = 1.0) -> Value:
-    """Exponential Linear Unit — smooth negative region, zero-centered outputs."""
+def elu(v, alpha=1.0):
+    """
+    ELU:
+        x if x>0
+        α(exp(x)-1) otherwise
+    """
+
     v = _ensure_value(v)
-    data = v.data if v.data > 0 else alpha * (math.exp(v.data) - 1.0)
-    out  = Value(data, _parents=(v,), _op='elu')
+
+    out_data=np.where(
+        v.data>0,
+        v.data,
+        alpha*(np.exp(v.data)-1)
+    )
+
+    out=Value(
+        out_data,
+        _parents=(v,),
+        _op='elu'
+    )
 
     def _backward():
-        v.grad += out.grad if v.data > 0 else (out.data + alpha) * out.grad
 
-    out._backward = _backward
+        grad=np.where(
+            v.data>0,
+            1.0,
+            out.data+alpha
+        )
+
+        v.grad += (
+            grad
+            * out.grad
+        )
+
+    out._backward=_backward
     return out
 
 
-def swish(v: Value) -> Value:
-    """Swish / SiLU: x · σ(x). Smooth, non-monotonic, often beats ReLU."""
+def swish(v):
+    """
+    Swish / SiLU:
+        x*σ(x)
+    """
+
     v = _ensure_value(v)
-    x = v.data
-    s = 1.0 / (1.0 + math.exp(-x)) if x >= 0 else math.exp(x) / (1.0 + math.exp(x))
-    out = Value(x * s, _parents=(v,), _op='swish')
+
+    x=v.data
+
+    s=np.where(
+        x>=0,
+        1/(1+np.exp(-x)),
+        np.exp(x)/(1+np.exp(x))
+    )
+
+    out=Value(
+        x*s,
+        _parents=(v,),
+        _op='swish'
+    )
 
     def _backward():
-        # d/dx [x·σ(x)] = σ(x) + x·σ(x)·(1 − σ(x))
-        v.grad += (s + x * s * (1.0 - s)) * out.grad
 
-    out._backward = _backward
+        grad=(
+            s+
+            x*s*(1-s)
+        )
+
+        v.grad += (
+            grad
+            * out.grad
+        )
+
+    out._backward=_backward
     return out
 
 
-def linear(v: Value) -> Value:
-    """Identity / no-op — used for output neurons (regression, etc.)."""
+def linear(v):
+    """
+    Identity function
+    """
+
     return _ensure_value(v)
 
 
-# ── registry ──────────────────────────────────────────────────────────────────
+# ==========================================================
+# Registry
+# ==========================================================
 
-ACTIVATIONS: dict[str, callable] = {
-    'relu':       relu,
-    'leaky_relu': leaky_relu,
-    'elu':        elu,
-    'swish':      swish,
-    'sigmoid':    sigmoid,
-    'tanh':       tanh,
-    'linear':     linear,
+ACTIVATIONS = {
+    "relu": relu,
+    "leaky_relu": leaky_relu,
+    "elu": elu,
+    "swish": swish,
+    "sigmoid": sigmoid,
+    "tanh": tanh,
+    "linear": linear,
 }
 
 
-def get_activation(name: str) -> callable:
-    """Look up an activation by name with a clear error on miss."""
-    try:
-        return ACTIVATIONS[name.lower()]
-    except KeyError:
+def get_activation(name):
+
+    name = name.lower()
+
+    if name not in ACTIVATIONS:
         raise ValueError(
             f"Unknown activation '{name}'. "
-            f"Available: {sorted(ACTIVATIONS)}"
+            f"Available: {list(ACTIVATIONS.keys())}"
         )
+
+    return ACTIVATIONS[name]
