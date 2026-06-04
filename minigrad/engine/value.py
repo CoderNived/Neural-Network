@@ -1,21 +1,38 @@
 # engine/value.py
 
 import numpy as np
-import math
 
 
 class Value:
     def __init__(self, data, _parents=(), _op='', _label=''):
-        self.data = np.array(data, dtype=float)
 
-        self.grad = np.zeros_like(self.data)
+        self._data = np.array(data, dtype=float)
+        self.grad = np.zeros_like(self._data)
 
         self._backward = lambda: None
         self._parents = set(_parents)
         self._op = _op
         self._label = _label
 
-        self._topo_cache = None
+    # ==========================================================
+    # Data property (prevents float assignment corruption)
+    # ==========================================================
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        self._data = np.array(value, dtype=float)
+
+        if hasattr(self, "grad"):
+            if self.grad.shape != self._data.shape:
+                self.grad = np.zeros_like(self._data)
+
+    # ==========================================================
+    # Utility
+    # ==========================================================
 
     def __repr__(self):
         return (
@@ -33,10 +50,11 @@ class Value:
         return self.data.shape == ()
 
     # ==========================================================
-    # Arithmetic operations
+    # Arithmetic Operations
     # ==========================================================
 
     def __add__(self, other):
+
         other = Value._wrap(other)
 
         out = Value(
@@ -46,6 +64,7 @@ class Value:
         )
 
         def _backward():
+
             self.grad += _reduce_to_shape(
                 out.grad,
                 self.data.shape
@@ -60,6 +79,7 @@ class Value:
         return out
 
     def __mul__(self, other):
+
         other = Value._wrap(other)
 
         out = Value(
@@ -69,6 +89,7 @@ class Value:
         )
 
         def _backward():
+
             self.grad += _reduce_to_shape(
                 other.data * out.grad,
                 self.data.shape
@@ -84,10 +105,10 @@ class Value:
 
     def __pow__(self, exponent):
 
-        assert isinstance(exponent,(int,float))
+        assert isinstance(exponent, (int, float))
 
-        out=Value(
-            self.data**exponent,
+        out = Value(
+            self.data ** exponent,
             (self,),
             f'**{exponent}'
         )
@@ -95,32 +116,32 @@ class Value:
         def _backward():
 
             self.grad += _reduce_to_shape(
-                exponent*
-                (self.data**(exponent-1))
-                *out.grad,
+                exponent *
+                (self.data ** (exponent - 1)) *
+                out.grad,
                 self.data.shape
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
 
     def __truediv__(self, other):
-        return self * (Value._wrap(other)**(-1))
+        return self * (Value._wrap(other) ** (-1))
 
     def __rtruediv__(self, other):
-        return Value._wrap(other)*(self**(-1))
+        return Value._wrap(other) * (self ** (-1))
 
     def __neg__(self):
-        return self*-1
+        return self * -1
 
-    def __sub__(self,other):
-        return self+(-Value._wrap(other))
+    def __sub__(self, other):
+        return self + (-Value._wrap(other))
 
-    def __rsub__(self,other):
-        return Value._wrap(other)+(-self)
+    def __rsub__(self, other):
+        return Value._wrap(other) + (-self)
 
-    __radd__=__add__
-    __rmul__=__mul__
+    __radd__ = __add__
+    __rmul__ = __mul__
 
     # ==========================================================
     # Activations
@@ -128,27 +149,27 @@ class Value:
 
     def relu(self):
 
-        out=Value(
-            np.maximum(0,self.data),
+        out = Value(
+            np.maximum(0, self.data),
             (self,),
             'relu'
         )
 
         def _backward():
 
-            self.grad += (
-                (self.data>0).astype(float)
-                *out.grad
+            self.grad += _reduce_to_shape(
+                (self.data > 0).astype(float) * out.grad,
+                self.data.shape
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
 
     def sigmoid(self):
 
-        s=1/(1+np.exp(-self.data))
+        s = 1 / (1 + np.exp(-self.data))
 
-        out=Value(
+        out = Value(
             s,
             (self,),
             'sigmoid'
@@ -156,20 +177,19 @@ class Value:
 
         def _backward():
 
-            self.grad += (
-                s*(1-s)
-                *out.grad
+            self.grad += _reduce_to_shape(
+                s * (1 - s) * out.grad,
+                self.data.shape
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
-
 
     def tanh(self):
 
-        t=np.tanh(self.data)
+        t = np.tanh(self.data)
 
-        out=Value(
+        out = Value(
             t,
             (self,),
             'tanh'
@@ -177,20 +197,19 @@ class Value:
 
         def _backward():
 
-            self.grad += (
-                (1-t**2)
-                *out.grad
+            self.grad += _reduce_to_shape(
+                (1 - t**2) * out.grad,
+                self.data.shape
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
-
 
     def exp(self):
 
-        e=np.exp(self.data)
+        e = np.exp(self.data)
 
-        out=Value(
+        out = Value(
             e,
             (self,),
             'exp'
@@ -198,20 +217,22 @@ class Value:
 
         def _backward():
 
-            self.grad += e*out.grad
+            self.grad += _reduce_to_shape(
+                e * out.grad,
+                self.data.shape
+            )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
-
 
     def log(self):
 
-        if np.any(self.data<=0):
+        if np.any(self.data <= 0):
             raise ValueError(
                 "log input must be positive"
             )
 
-        out=Value(
+        out = Value(
             np.log(self.data),
             (self,),
             'log'
@@ -219,14 +240,13 @@ class Value:
 
         def _backward():
 
-            self.grad += (
-                (1/self.data)
-                *out.grad
+            self.grad += _reduce_to_shape(
+                (1 / self.data) * out.grad,
+                self.data.shape
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
-
 
     # ==========================================================
     # Reductions
@@ -234,9 +254,9 @@ class Value:
 
     def mean(self):
 
-        n=self.data.size
+        n = self.data.size
 
-        out=Value(
+        out = Value(
             self.data.mean(),
             (self,),
             'mean'
@@ -246,16 +266,15 @@ class Value:
 
             self.grad += (
                 np.ones_like(self.data)
-                *out.grad/n
+                * out.grad / n
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
-
 
     def sum(self):
 
-        out=Value(
+        out = Value(
             self.data.sum(),
             (self,),
             'sum'
@@ -265,12 +284,11 @@ class Value:
 
             self.grad += (
                 np.ones_like(self.data)
-                *out.grad
+                * out.grad
             )
 
-        out._backward=_backward
+        out._backward = _backward
         return out
-
 
     # ==========================================================
     # Backpropagation
@@ -278,38 +296,30 @@ class Value:
 
     def backward(self):
 
-        if self._topo_cache is None:
+        topo = []
+        visited = set()
 
-            topo=[]
-            visited=set()
+        def build(v):
 
-            def build(v):
+            if id(v) not in visited:
 
-                if id(v) not in visited:
+                visited.add(id(v))
 
-                    visited.add(id(v))
+                for p in v._parents:
+                    build(p)
 
-                    for p in v._parents:
-                        build(p)
+                topo.append(v)
 
-                    topo.append(v)
+        build(self)
 
-            build(self)
+        self.grad = np.ones_like(self.data)
 
-            self._topo_cache=topo
-
-
-        self.grad=np.ones_like(self.data)
-
-        for node in reversed(
-            self._topo_cache
-        ):
+        for node in reversed(topo):
             node._backward()
-
 
     def zero_grad(self):
 
-        visited=set()
+        visited = set()
 
         def zero(v):
 
@@ -317,7 +327,7 @@ class Value:
 
                 visited.add(id(v))
 
-                v.grad=np.zeros_like(v.data)
+                v.grad = np.zeros_like(v.data)
 
                 for p in v._parents:
                     zero(p)
@@ -334,27 +344,30 @@ def _reduce_to_shape(
     target_shape
 ):
 
-    grad=np.array(
+    grad = np.array(
         grad,
         dtype=float
     )
 
-    if target_shape==():
+    if target_shape == ():
         return grad.sum()
 
-    while grad.ndim>len(target_shape):
-        grad=grad.sum(
+    while grad.ndim > len(target_shape):
+
+        grad = grad.sum(
             axis=0
         )
 
-    for i,(g,t) in enumerate(
+    for i, (g, t) in enumerate(
         zip(
             grad.shape,
             target_shape
         )
     ):
-        if t==1 and g>1:
-            grad=grad.sum(
+
+        if t == 1 and g > 1:
+
+            grad = grad.sum(
                 axis=i,
                 keepdims=True
             )
