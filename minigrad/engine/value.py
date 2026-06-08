@@ -1,5 +1,3 @@
-# engine/value.py
-
 import numpy as np
 
 
@@ -144,6 +142,100 @@ class Value:
     __rmul__ = __mul__
 
     # ==========================================================
+    # Matrix Multiplication  (Problem 1)
+    # ==========================================================
+
+    def __matmul__(self, other):
+        """
+        Matrix multiplication: self @ other
+
+        Forward:  out = A @ B
+        Backward: dA = out.grad @ B.T
+                  dB = A.T @ out.grad
+        """
+        other = Value._wrap(other)
+
+        out = Value(
+            self.data @ other.data,
+            (self, other),
+            '@'
+        )
+
+        def _backward():
+            # dL/dA = dL/dOut @ B^T
+            self.grad += out.grad @ other.data.T
+            # dL/dB = A^T @ dL/dOut
+            other.grad += self.data.T @ out.grad
+
+        out._backward = _backward
+        return out
+
+    def __rmatmul__(self, other):
+        return Value._wrap(other).__matmul__(self)
+
+    # ==========================================================
+    # Transpose  (Problem 2)
+    # ==========================================================
+
+    def transpose(self, *axes):
+        """
+        Transpose axes. With no args, reverses all axes (like np.T).
+        Example: x.transpose()  or  x.transpose(0, 2, 1)
+        """
+        if axes:
+            out = Value(
+                np.transpose(self.data, axes),
+                (self,),
+                'transpose'
+            )
+
+            def _backward():
+                # Invert the permutation to get back to original shape
+                inv_axes = np.argsort(axes)
+                self.grad += np.transpose(out.grad, inv_axes)
+
+        else:
+            out = Value(
+                self.data.T,
+                (self,),
+                'T'
+            )
+
+            def _backward():
+                self.grad += out.grad.T
+
+        out._backward = _backward
+        return out
+
+    @property
+    def T(self):
+        """Shorthand: x.T  (reverses all axes, like numpy)"""
+        return self.transpose()
+
+    # ==========================================================
+    # Reshape  (Problem 3)
+    # ==========================================================
+
+    def reshape(self, *shape):
+        """
+        Reshape to new shape without copying data.
+        Example: x.reshape(4, 2)  or  x.reshape(-1)
+        """
+        original_shape = self.data.shape
+
+        out = Value(
+            self.data.reshape(shape),
+            (self,),
+            'reshape'
+        )
+
+        def _backward():
+            self.grad += out.grad.reshape(original_shape)
+
+        out._backward = _backward
+        return out
+
+    # ==========================================================
     # Activations
     # ==========================================================
 
@@ -248,6 +340,29 @@ class Value:
         out._backward = _backward
         return out
 
+    def softmax(self, axis=-1):
+        """
+        Numerically stable softmax along `axis`.
+
+        Forward:  s = exp(x - max(x)) / sum(exp(x - max(x)))
+        Backward: dL/dx_i = s_i * (dL/ds_i - sum_j(dL/ds_j * s_j))
+                           = s_i * (dL/ds_i - dot(dL/ds, s))
+        """
+        shifted = self.data - self.data.max(axis=axis, keepdims=True)
+        e = np.exp(shifted)
+        s = e / e.sum(axis=axis, keepdims=True)
+
+        out = Value(s, (self,), 'softmax')
+
+        def _backward():
+            # Jacobian-vector product for softmax
+            # grad_input_i = s_i * (grad_out_i - sum_j(grad_out_j * s_j))
+            dot = (out.grad * s).sum(axis=axis, keepdims=True)
+            self.grad += s * (out.grad - dot)
+
+        out._backward = _backward
+        return out
+
     # ==========================================================
     # Reductions
     # ==========================================================
@@ -272,20 +387,25 @@ class Value:
         out._backward = _backward
         return out
 
-    def sum(self):
+    def sum(self, axis=None, keepdims=False):
+        """
+        Sum over all elements (default) or along an axis.
+        Matches numpy's interface.
+        """
+        original_shape = self.data.shape
 
         out = Value(
-            self.data.sum(),
+            self.data.sum(axis=axis, keepdims=keepdims),
             (self,),
             'sum'
         )
 
         def _backward():
-
-            self.grad += (
-                np.ones_like(self.data)
-                * out.grad
-            )
+            grad = out.grad
+            if axis is not None and not keepdims:
+                # Re-expand the reduced axis so broadcasting works
+                grad = np.expand_dims(grad, axis=axis)
+            self.grad += np.broadcast_to(grad, original_shape).copy()
 
         out._backward = _backward
         return out
